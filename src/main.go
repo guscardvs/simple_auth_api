@@ -2,14 +2,16 @@ package main
 
 import (
 	"github.com/gofiber/fiber/v2"
+	"github.com/gustcorrea/simple_auth_api/database"
+	"github.com/gustcorrea/simple_auth_api/routes"
 )
 
 func main() {
 	app := fiber.New()
 
-	app.Get("/", func(context *fiber.Ctx) error {
-		return context.SendString("Hello World")
-	})
+	database.InitDatabase()
+
+	app.Mount("/", routes.SetupRoutes())
 
 	app.Listen(":3000")
 }
