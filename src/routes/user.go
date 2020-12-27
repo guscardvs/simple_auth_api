@@ -14,7 +14,7 @@ func GetUserRoutes() *fiber.App {
 	userRouter.Post("/create", controllers.CreateUser)
 
 	privateRoute := userRouter.Group("/user")
-	privateRoute.Use(controllers.SecureAuth)
+	privateRoute.Use(controllers.SecureAuthMiddleware)
 	privateRoute.Get("/", controllers.GetUser)
 	privateRoute.Put("/", controllers.EditUser)
 	privateRoute.Put("/password", controllers.ChangePassword)
