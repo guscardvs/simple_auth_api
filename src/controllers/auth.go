@@ -28,6 +28,10 @@ type Claims struct {
 	jwt.StandardClaims
 }
 
+type Refresh struct {
+	Token string `json:"refresh_token"`
+}
+
 func (token *Token) tokenForUser(user *models.User) {
 	expiration := time.Now().Add(5 * time.Minute)
 	accessClaims := &Claims{
@@ -44,8 +48,8 @@ func (token *Token) tokenForUser(user *models.User) {
 	}
 	tk := jwt.NewWithClaims(jwt.SigningMethodHS512, accessClaims)
 	rfTk := jwt.NewWithClaims(jwt.SigningMethodHS512, refreshClaims)
-	strTk, _ := tk.SignedString([]byte(settings.ClientSecret))
-	strRf, _ := rfTk.SignedString([]byte(settings.ClientId + settings.ClientSecret))
+	strTk, _ := tk.SignedString(settings.AccessKey)
+	strRf, _ := rfTk.SignedString(settings.RefreshKey)
 	token.AccessToken = strTk
 	token.ExpiresAt = 300
 	token.RefreshToken = strRf
@@ -87,10 +91,45 @@ func Authenticate(context *fiber.Ctx) error {
 	return context.JSON(token)
 }
 
+func parserFunc(key []byte) func(*jwt.Token) (interface{}, error) {
+	return func(token *jwt.Token) (interface{}, error) {
+		return key, nil
+	}
+}
+
+func validateToken(token string, claims *Claims, user *models.User, key []byte) (*database.ErrorResponse, int) {
+	errorResponse := new(database.ErrorResponse)
+	tokenStruct, err := jwt.ParseWithClaims(token, claims, parserFunc(key))
+	if tokenStruct.Valid {
+		if claims.ExpiresAt < time.Now().Unix() {
+			errorResponse.Error = "Token expired"
+			return errorResponse, fiber.StatusUnauthorized
+		}
+		models.GetUserByID(claims.ID, user)
+		if user == nil {
+			errorResponse.Error = "User not found"
+			return errorResponse, fiber.StatusUnauthorized
+		}
+	} else if ve, ok := err.(*jwt.ValidationError); ok {
+		if ve.Errors&jwt.ValidationErrorMalformed != 0 {
+			errorResponse.Error = "Invalid Token"
+			return errorResponse, fiber.StatusForbidden
+		} else if ve.Errors&(jwt.ValidationErrorExpired|jwt.ValidationErrorNotValidYet) != 0 {
+			errorResponse.Error = "Invalid Token"
+			return errorResponse, fiber.StatusUnauthorized
+		} else {
+			errorResponse.Error = "Invalid Token"
+			return errorResponse, fiber.StatusForbidden
+		}
+	}
+	return nil, 200
+}
+
 func SecureAuth(c *fiber.Ctx) error {
 
 	authorization := strings.Split(c.Get("Authorization"), " ")
 	errorResponse := new(database.ErrorResponse)
+	var status int
 
 	if len(authorization) != 2 {
 		errorResponse.Error = "Invalid token format"
@@ -112,33 +151,52 @@ func SecureAuth(c *fiber.Ctx) error {
 	claims := new(Claims)
 
 	user := new(models.User)
-	token, err := jwt.ParseWithClaims(accessToken, claims,
-		func(token *jwt.Token) (interface{}, error) {
-			return []byte(settings.ClientSecret), nil
-		})
-	if token.Valid {
-		if claims.ExpiresAt < time.Now().Unix() {
-			errorResponse.Error = "Token expired"
-			return c.Status(fiber.StatusUnauthorized).JSON(errorResponse)
-		}
-		models.GetUserByID(claims.ID, user)
-		if user == nil {
-			c.ClearCookie("access_token", "refresh_token")
-			errorResponse.Error = "User not found"
-			return c.Status(fiber.StatusUnauthorized).JSON(errorResponse)
-		}
-	} else if ve, ok := err.(*jwt.ValidationError); ok {
-		if ve.Errors&jwt.ValidationErrorMalformed != 0 {
-			c.ClearCookie("access_token", "refresh_token")
-			return c.SendStatus(fiber.StatusForbidden)
-		} else if ve.Errors&(jwt.ValidationErrorExpired|jwt.ValidationErrorNotValidYet) != 0 {
-			c.ClearCookie("access_token", "refresh_token")
-			return c.SendStatus(fiber.StatusUnauthorized)
-		} else {
-			c.ClearCookie("access_token", "refresh_token")
-			return c.SendStatus(fiber.StatusForbidden)
-		}
+	errorResponse, status = validateToken(accessToken, claims, user, settings.AccessKey)
+	if errorResponse != nil {
+		return c.Status(status).JSON(errorResponse)
 	}
+	// token, err := jwt.ParseWithClaims(accessToken, claims, parserFunc(settings.AccessKey))
+	// if token.Valid {
+	// 	if claims.ExpiresAt < time.Now().Unix() {
+	// 		errorResponse.Error = "Token expired"
+	// 		return c.Status(fiber.StatusUnauthorized).JSON(errorResponse)
+	// 	}
+	// 	models.GetUserByID(claims.ID, user)
+	// 	if user == nil {
+	// 		c.ClearCookie("access_token", "refresh_token")
+	// 		errorResponse.Error = "User not found"
+	// 		return c.Status(fiber.StatusUnauthorized).JSON(errorResponse)
+	// 	}
+	// } else if ve, ok := err.(*jwt.ValidationError); ok {
+	// 	if ve.Errors&jwt.ValidationErrorMalformed != 0 {
+	// 		c.ClearCookie("access_token", "refresh_token")
+	// 		return c.SendStatus(fiber.StatusForbidden)
+	// 	} else if ve.Errors&(jwt.ValidationErrorExpired|jwt.ValidationErrorNotValidYet) != 0 {
+	// 		c.ClearCookie("access_token", "refresh_token")
+	// 		return c.SendStatus(fiber.StatusUnauthorized)
+	// 	} else {
+	// 		c.ClearCookie("access_token", "refresh_token")
+	// 		return c.SendStatus(fiber.StatusForbidden)
+	// 	}
+	// }
 	c.Locals("userID", user.ID)
 	return c.Next()
+}
+
+func RefreshToken(context *fiber.Ctx) error {
+
+	refresh := new(Refresh)
+	claims := new(Claims)
+	user := new(models.User)
+	context.BodyParser(refresh)
+
+	errorResponse, status := validateToken(refresh.Token, claims, user, settings.RefreshKey)
+	if errorResponse != nil {
+		return context.Status(status).JSON(errorResponse)
+	}
+
+	token := new(Token)
+	token.tokenForUser(user)
+
+	return context.JSON(token)
 }

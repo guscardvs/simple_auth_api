@@ -11,6 +11,6 @@ var authRouter = fiber.New()
 func GetAuthRoutes() *fiber.App {
 
 	authRouter.Post("/token", controllers.Authenticate)
-
+	authRouter.Post("/refresh", controllers.RefreshToken)
 	return authRouter
 }
